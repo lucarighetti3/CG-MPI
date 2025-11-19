@@ -133,6 +133,7 @@ void cgsolver_mpi( double *A_local, double *b_local, double *x, int local_m, int
 
 	//compute recvcounts and displs for MPI_Allgatherv
 	// number of elements for each process (local_m size may differ)
+
 	int *recvcounts = (int*) malloc(psize * sizeof(int));
 	// displacement for each process
 	int *displs = (int*) malloc(psize * sizeof(int));
@@ -143,7 +144,7 @@ void cgsolver_mpi( double *A_local, double *b_local, double *x, int local_m, int
 	for (int i = 1; i < psize; i++) {
 		displs[i] = displs[i-1] + recvcounts[i-1];
 	}	
-
+	
 	// assign base index for each process
 	int base = displs[prank];
 
@@ -310,6 +311,7 @@ void smvm(int m, const double* val, const int* col, const int* row, const double
 
 
 
+
 /*
 Initialization of the source term b 
 */
@@ -317,10 +319,11 @@ Initialization of the source term b
 double * init_source_term(int n, double h){
 	double * f;
 	int i;
-	f  = (double*) malloc(n*sizeof(double*));
+	f  = (double*) malloc(n * sizeof(double));
 
 	for(i = 0; i < n; i++) {
 		f[i] = (double)i * -2. * M_PI * M_PI * sin(10.*M_PI*i*h) * sin(10.*M_PI*i*h);
 	}
 	return f;
 }
+

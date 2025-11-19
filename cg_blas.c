@@ -89,21 +89,15 @@ int main ( int argc, char **argv ) {
 
 	// Calculate number of rows for each process (n=m in this case)
 	m_local = m / psize;
-
-	if (prank < m % psize) {
-		m_local++;
-	}	
-	else {
-		m_local = m / psize;
-	}	
+	if (prank < m % psize) m_local++;
+	
 
 	// Allocate memory for local matrix and vector on each process
 	A_local = (double*) malloc(m_local * n * sizeof(double));
 	b_local = (double*) malloc(m_local * sizeof(double));
-	//printf("Process %d: Allocated A_local of size (%d x %d)\n", prank, m_local, n);
 
 	// Matrix A is stored in COLUMN-MAJOR order (index = col*m + row)
-	// To send rows, we need to manually pack them because rows are NOT contiguous	
+	// To send rows, we need to manually pack (or using a datatype) because rows are NOT contiguous	
 	int m_i;
 	
 	// Calculate starting row for each process
@@ -119,65 +113,45 @@ int main ( int argc, char **argv ) {
 		row_starts[i+1] = row_starts[i] + m_i;
 		//printf("Process %d: row_starts[%d] = %d\n", prank, i, row_starts[i]);
 	}
+
 	
 	double t0 = MPI_Wtime();
 
 	// loop over all processes and send the matrix and vector to each process from rank zero 
 	if (prank == 0) {
-		// Process 0: copy first m_local rows to A_local 
-		// Store in A_local in column-major: A_local[col*m_local + row]
-		for (int row = 0; row < m_local; row++) {
-			for (int col = 0; col < n; col++) {
-				A_local[col * m_local + row] = A[col * m + row];
-			}
-		}
+		
+		for (int col = 0; col < n; col++) {
+            memcpy(&A_local[col * m_local], &A[col * m], m_local * sizeof(double));
+        }
 		memcpy(b_local, b, m_local * sizeof(double));
 		
 		// Send to other processes - need to pack rows manually
 		for (int i = 1; i < psize; i++) {
 			// compute local m_local for process i
-			m_i = n / psize;
-			if (i < n % psize) {
-				m_i++;
-			} else {
-				m_i = n / psize;
-			}
+			m_i = m / psize;
+			if (i < m % psize) m_i++;
 			
-			// Pack m_i rows into a temporary buffer
-			double *send_buffer = (double*) malloc(m_i * n * sizeof(double));
-			for (int row = 0; row < m_i; row++) {
-				int global_row = row_starts[i] + row;
-				for (int col = 0; col < n; col++) {
-					// Pack into row-major order in send_buffer for easier sending
-					send_buffer[row * n + col] = A[col * m + global_row];
-				}
-			}
+			//Define a datatype representing the non-contiguous row block
+    		MPI_Datatype column_slice_type;         
+    		// Count = n (cols), Block = m_i (rows to send), Stride = m (global rows)
+    		MPI_Type_vector(n, m_i, m, MPI_DOUBLE, &column_slice_type);
+    		MPI_Type_commit(&column_slice_type);
 			
-			MPI_Send(send_buffer, m_i * n, MPI_DOUBLE, i, 0, MPI_COMM_WORLD);
-			MPI_Send(&b[row_starts[i]], m_i, MPI_DOUBLE, i, 0, MPI_COMM_WORLD);
+			MPI_Send(&A[row_starts[i]], 1, column_slice_type, i, 0, MPI_COMM_WORLD);
+			MPI_Send(&b[row_starts[i]], m_i, MPI_DOUBLE, i, 1, MPI_COMM_WORLD);
 			
-			free(send_buffer);
+			MPI_Type_free(&column_slice_type);
 		}
 	} else {
-		// Receive from process 0 m_local rows, then unpack into column-major order in A_local
-		double *recv_buffer = (double*) malloc(m_local * n * sizeof(double));
-		MPI_Recv(recv_buffer, m_local * n, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		MPI_Recv(b_local, m_local, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		// Receive from process 0 m_local rows, already received in column-major order in A_local
+		MPI_Recv(A_local, m_local * n, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		MPI_Recv(b_local, m_local, MPI_DOUBLE, 0, 1, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 		
-		// Unpack from row-major recv_buffer to column-major A_local
-		for (int row = 0; row < m_local; row++) {
-			for (int col = 0; col < n; col++) {
-				A_local[col * m_local + row] = recv_buffer[row * n + col];
-			}
-		}
-		
-		free(recv_buffer);
 	}
 	
 	free(row_starts);
 
-	// Wait for all communications to complete
-	// an i just wait for each process to complete its send ?
+	// Wait for all communications to complete (only if using Isend/Irecv)
 	// MPI_Waitall(k, m_requests, MPI_STATUS_IGNORE);
 	
 	//TODO: undertand how to use displ in scatterv
@@ -202,6 +176,7 @@ int main ( int argc, char **argv ) {
 	x = (double*) malloc(n * sizeof(double));
 	//initialize solution vector to zero
 	memset(x, 0., n*sizeof(double));
+
 	if (prank == 0){
 	printf("Matrix and vector distributed to all processes.\n");
 	printf("Call cgsolver_mpi() on matrix size (%d x %d) on process %d\n",m_local,n,prank);
@@ -216,9 +191,8 @@ int main ( int argc, char **argv ) {
 	printf("Total time including communication = %f [s]\n",(t_end - t0));
 	}
 	
-
 	//Re-initialize solution vector to zero
-	memset(x, 0., n*sizeof(double));
+	memset(x, 0., n *sizeof(double));
 
 	if (prank == 0){
 	printf("Call cgsolver() on matrix size (%d x %d)\n",m,n);
@@ -256,3 +230,5 @@ int main ( int argc, char **argv ) {
 
 	return 0;
 }
+
+
