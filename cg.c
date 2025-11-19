@@ -1,10 +1,13 @@
 #include "cg.h"
+#include <mpi.h>
+
 
 const double TOLERANCE = 1.0e-10;
 const double NEARZERO = 1.0e-14;
 /*
 	cgsolver solves the linear equation A*x = b where A is 
-	of size m x n
+	of size m x n , but is always assumed to be square (m = n) and symmetric positive definite
+	using the Conjugate Gradient method.
 
 Code based on MATLAB code (from wikipedia ;-)  ):
 
@@ -51,7 +54,7 @@ void cgsolver( double *A, double *b, double *x, int m, int n ){
 
 //  r = b - A * x;
 	memset(Ap, 0., n * sizeof(double));
-	cblas_dgemv (CblasColMajor, CblasNoTrans, m, n, 1. , A, n, x, 1,  0., Ap, 1);
+	cblas_dgemv (CblasColMajor, CblasNoTrans, m, n, 1. , A, lda, x, 1,  0., Ap, 1);
 	cblas_dcopy(n, b, 1, tmp, 1);
 	cblas_daxpy(n, -1., Ap, 1, tmp, 1 );
 	cblas_dcopy(n, tmp, 1, r, 1);
@@ -98,6 +101,120 @@ void cgsolver( double *A, double *b, double *x, int m, int n ){
 	printf("\t[STEP %d] residual = %E, ||Ax -b|| = %E\n",k,sqrt(rsold), sqrt(res));
 
 	free(r);
+	free(p);
+	free(Ap);
+	free(tmp);
+}
+
+void cgsolver_mpi( double *A_local, double *b_local, double *x, int local_m, int n, int prank, int psize ){	
+	
+	double * r_loc;
+	double * r_tot;
+	double * p;
+	double rsold;
+	double rsnew;
+	double * Ap;
+	double * tmp;
+	double * tmp_loc;
+	double alpha;
+
+	int lda = local_m;
+	double al = 1.;
+	double be = 0.;
+
+	int k = 0;
+
+	r_loc = (double*) malloc(local_m* sizeof(double));
+	r_tot = (double*) malloc(n* sizeof(double));
+	p = (double*) malloc(n* sizeof(double));
+	Ap = (double*) malloc(local_m* sizeof(double));
+	tmp = (double*) malloc(n* sizeof(double));
+	tmp_loc = (double*) malloc(local_m* sizeof(double));
+
+	//compute recvcounts and displs for MPI_Allgatherv
+	// number of elements for each process (local_m size may differ)
+	int *recvcounts = (int*) malloc(psize * sizeof(int));
+	// displacement for each process
+	int *displs = (int*) malloc(psize * sizeof(int));
+	//gather local_m (size) from each process into recvcounts
+	MPI_Allgather(&local_m, 1, MPI_INT, recvcounts, 1, MPI_INT, MPI_COMM_WORLD);
+	//compute displs
+	displs[0] = 0;
+	for (int i = 1; i < psize; i++) {
+		displs[i] = displs[i-1] + recvcounts[i-1];
+	}	
+
+	// assign base index for each process
+	int base = displs[prank];
+
+//  r = b - A * x;
+// each process computes its local part of r
+	memset(Ap, 0., local_m * sizeof(double));
+	cblas_dgemv (CblasColMajor, CblasNoTrans, local_m, n, 1. , A_local, lda, x, 1,  0., Ap, 1);
+	cblas_dcopy(local_m, b_local, 1, tmp_loc, 1);
+	cblas_daxpy(local_m, -1., Ap, 1, tmp_loc, 1 );
+	cblas_dcopy(local_m, tmp_loc, 1, r_loc, 1);
+	
+// Gather r_loc to r_tot in order to compute total vector p  
+	MPI_Allgatherv(r_loc, local_m, MPI_DOUBLE, r_tot, recvcounts, displs, MPI_DOUBLE, MPI_COMM_WORLD);
+//  p = r;
+	cblas_dcopy (n, r_tot, 1, p, 1);
+
+//  rsold = r' * r;
+	rsold = cblas_ddot (n, r_tot, 1, r_tot, 1);
+	
+//  for i = 1:length(b)
+	while ( k < n ){
+//      Ap = A * p; 
+      	memset(Ap, 0., local_m * sizeof(double));
+		cblas_dgemv (CblasColMajor, CblasNoTrans, local_m, n, al, A_local, lda, p, 1, be, Ap, 1);
+//      (p' * Ap);
+		double pdotAp_loc = cblas_ddot(local_m, &p[base], 1, Ap, 1);
+		double pdotAp = 0.0;
+// 		Sum over all processes to get global p' * Ap
+		MPI_Allreduce(&pdotAp_loc, &pdotAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+//      alpha = rsold / (p' * Ap);
+		alpha = rsold / fmax( pdotAp, rsold * NEARZERO );
+//      x = x + alpha * p;
+		cblas_daxpy(n, alpha, p, 1, x, 1);
+//      r = r - alpha * Ap;
+		cblas_daxpy(local_m, -alpha, Ap, 1, r_loc, 1);
+//      rsnew = r' * r;
+// 		Gather r_loc to r_tot to compute the global rsnew
+		MPI_Allgatherv(r_loc, local_m, MPI_DOUBLE, r_tot, recvcounts, displs, MPI_DOUBLE, MPI_COMM_WORLD);
+		rsnew = cblas_ddot (n, r_tot, 1, r_tot, 1);
+//      if sqrt(rsnew) < 1e-10
+//            break;
+		if ( sqrt(rsnew) < TOLERANCE ) break;             // Convergence test
+//      p = r + (rsnew / rsold) * p;
+		cblas_dcopy(n, r_tot, 1, tmp, 1);
+		cblas_daxpy(n, (double)(rsnew/rsold), p, 1, tmp, 1);
+		cblas_dcopy(n, tmp, 1, p, 1);
+	
+//      rsold = rsnew;
+		rsold = rsnew;
+		if (prank == 0) {
+		printf("\t[STEP %d] residual = %E\r", k, sqrt(rsold));
+		fflush(stdout);
+		}
+		k++;
+	}
+
+	memset(r_loc, 0., local_m * sizeof(double));
+	cblas_dgemv (CblasColMajor, CblasNoTrans, local_m, n, al, A_local, lda, x, 1, be, r_loc, 1);
+	cblas_daxpy(local_m, -1., b_local, 1, r_loc, 1);
+	double res_loc = cblas_ddot(local_m, r_loc, 1, r_loc, 1);
+	double res = 0.0;
+	MPI_Allreduce(&res_loc, &res, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+	if (prank == 0) {
+	printf("\t[STEP %d] residual = %E, ||Ax -b|| = %E\n",k,sqrt(rsold), sqrt(res));
+	}
+
+	free(r_loc);
+	free(r_tot);
+	free(recvcounts);
+	free(displs);
 	free(p);
 	free(Ap);
 	free(tmp);
@@ -193,7 +310,6 @@ void smvm(int m, const double* val, const int* col, const int* row, const double
 
 
 
-
 /*
 Initialization of the source term b 
 */
@@ -208,5 +324,3 @@ double * init_source_term(int n, double h){
 	}
 	return f;
 }
-
-

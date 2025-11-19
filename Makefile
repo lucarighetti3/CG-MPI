@@ -2,7 +2,7 @@ CC=mpicc
 LD=${CC}
 COVFLAGS = -fprofile-arcs -ftest-coverage
 INCLUDES = -I$(OPENBLAS_ROOT)/include
-CFLAGS+=-Wall -pedantic -O3 -fPIC $(INCLUDES) #${COVFLAGS}
+CFLAGS+=-Wall -pedantic -O3 -fPIC $(INCLUDES) -g -pg #${COVFLAGS}
 DBGFLAGS = -g -pg
 
 LDFLAGS+=-lm -fopenmp -L$(OPENBLAS_ROOT)/lib -lopenblas ${COVFLAGS} -g -pg 

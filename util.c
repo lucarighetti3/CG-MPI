@@ -136,8 +136,8 @@ double* read_mat(const char * restrict fn)
 			if (fscanf(f, "%d %d %lg\n", &I[i], &J[i], &tmp)==3){
 				I[i]--;  /* adjust from 1-based to 0-based */
 				J[i]--;
-				mat[I[i]*m+J[i]] = tmp;
 				mat[J[i]*m+I[i]] = tmp;
+				mat[I[i]*m+J[i]] = tmp;
 			}else if(fscanf(f, "%lg\n",&tmp)==1){
 				mat[i] = tmp;
 			}else{
@@ -154,7 +154,7 @@ double* read_mat(const char * restrict fn)
 			if (fscanf(f, "%d %d %lg\n", &I[i], &J[i], &tmp)==3){
 				I[i]--;  /* adjust from 1-based to 0-based */
 				J[i]--;
-				mat[I[i]*m+J[i]] = tmp;
+				mat[J[i]*m+I[i]] = tmp;
 			}else if(fscanf(f, "%lg\n",&tmp)==1){
 				mat[i] = tmp;
 			}else{
